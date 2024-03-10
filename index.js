@@ -5,8 +5,15 @@ let substep_cnt = 8
 
 let gravity = {x:0, y:1000}
 let mouse = {x: 0, y: 0}
+let mouseDown = false;
 
 let display_debug = true
+let opf = 0;
+
+let closestObjI = 0
+let closestObjElemI = 0;
+let validDist = false;
+
 
 class SoftBody{
     constructor(ofsx, ofsy, w, h, elemx, elemy, softness, color) {
@@ -19,6 +26,7 @@ class SoftBody{
         this.mesh = []
         this.mesh_vel = []
         this.mesh_prev = []
+        this.mesh_frozen = -1
         for(let mx = 0; mx < this.elx; mx++) {
             for(let my = 0; my < this.ely; my++) {
                 this.mesh.push({x: mx*(this.w/this.elx)+ofsx, y: my*(this.h/this.ely)+ofsy})
@@ -47,15 +55,17 @@ class SoftBody{
             //step A - apply transformation
             for(let x = 0; x < this.elx; x++) {
                 for(let y = 0; y < this.ely; y++) {
-                    //calculate gravity
-                    this.mesh_vel[x*this.elx + y] = v_add(this.mesh_vel[x*this.elx + y], v_mul_n(gravity, delta_time))
-
-                    //save previous pos
-                    this.mesh_prev[x*this.elx + y] = {x: this.mesh[x*this.elx + y].x, y:this.mesh[x*this.elx + y].y}
+                    if(x*this.elx + y != this.mesh_frozen) {
+                        //calculate gravity
+                        this.mesh_vel[x*this.elx + y] = v_add(this.mesh_vel[x*this.elx + y], v_mul_n(gravity, delta_time))
     
-                    //add saved velocity to current point
-                    this.mesh[x*this.elx + y] = v_add(this.mesh[x*this.elx + y], v_mul_n(this.mesh_vel[x*this.elx + y], delta_time))
-    
+                        //save previous pos
+                        this.mesh_prev[x*this.elx + y] = {x: this.mesh[x*this.elx + y].x, y:this.mesh[x*this.elx + y].y}
+        
+                        //add saved velocity to current point
+                        this.mesh[x*this.elx + y] = v_add(this.mesh[x*this.elx + y], v_mul_n(this.mesh_vel[x*this.elx + y], delta_time))
+                        opf++
+                    }
                 }
             }
             //step B - apply constraints
@@ -151,6 +161,7 @@ class SoftBody{
                         this.mesh[(x+1)*this.elx + y] = v_add(this.mesh[(x+1)*this.elx + y], delta1)
                         this.mesh[x*this.elx + y+1] = v_add(this.mesh[x*this.elx + y+1], delta2)
                     }
+                    opf++
                 }
             }
 
@@ -171,13 +182,52 @@ class SoftBody{
                     if(this.mesh[x*this.elx + y].x < 0) {
                         this.mesh[x*this.elx + y].x = 0
                     }
+                    opf++
+                }
+            }
+
+            //collisions
+            //00, 01, 02, 03
+            //04, 05, 06, 07
+            //08, 09, 10, 11
+            //12, 13, 14, 15
+            for(let i in this.mesh) {
+                for(let j in physics_bodies) {
+                    if(i != j) {
+                        //cycle through every edge element of the body
+                        for(let p of [
+                            0, 
+                            physics_bodies[j].elx-1, 
+                            (physics_bodies[j].elx-1)*physics_bodies[j].ely, 
+                            (physics_bodies[j].elx-1)*physics_bodies[j].ely + (physics_bodies[j].elx-1)
+                        ]) {
+                            //check if the point is in the quad
+                            console.log(
+                                this.mesh[0],
+                                this.mesh[this.elx-1],
+                                this.mesh[(this.elx-1) * (this.ely-0)],
+                                this.mesh[(this.elx-1) * (this.ely-0) + (this.elx-1)],
+                            )
+                            if(v_pointInsideQuad(
+                                this.mesh[0],
+                                this.mesh[this.elx-1],
+                                this.mesh[(this.elx-1) * (this.ely-0)],
+                                this.mesh[(this.elx-1) * (this.ely-0) + (this.elx-1)],
+                                physics_bodies[j].mesh[p]
+                            )) {
+                                console.log('collision')
+                            }
+                        }
+                    }
                 }
             }
 
             //step C - XPBD formula
             for(let i in this.mesh) {
-                this.mesh_vel[i] = v_mul_n(v_add(this.mesh[i], v_mul_n(this.mesh_prev[i], -1)), 1 / delta_time)
-                
+                if(i != this.mesh_frozen) {
+                    this.mesh_vel[i] = v_mul_n(v_add(this.mesh[i], v_mul_n(this.mesh_prev[i], -1)), 1 / delta_time)
+                }
+                opf++
             }
         }
     }
@@ -204,6 +254,21 @@ class SoftBody{
                     ctx.lineTo(this.mesh[x*this.elx + y].x, this.mesh[x*this.elx + y].y)
                     ctx.fill()
                     ctx.stroke()
+
+                    //outline
+                    ctx.strokeStyle = 'black'
+                    if(x==0) {
+                        v_drawLine(this.mesh[x*this.elx + y], this.mesh[x*this.elx + y+1], 4)
+                    }
+                    if(y==0) {
+                        v_drawLine(this.mesh[x*this.elx + y], this.mesh[(x+1)*this.elx + y], 4)
+                    }
+                    if(x==this.elx-2) {
+                        v_drawLine(this.mesh[(x+1)*this.elx + y], this.mesh[(x+1)*this.elx + y+1], 4)
+                    }
+                    if(y==this.ely-2) {
+                        v_drawLine(this.mesh[(x+0)*this.elx + y+1], this.mesh[(x+1)*this.elx + y+1], 4)
+                    }
                 }
             }
         }
@@ -235,11 +300,18 @@ function init() {
 
     //input
     window.addEventListener('mousedown', (e) => {
-        let chosen_col = colors[Math.floor(Math.random()*colors.length)]
-        createSoftBody(mouse.x, mouse.y, 196, 196, 6, 6, 0.1, chosen_col)
+        console.log(e)
+        if(e.button == 1) {
+            let chosen_col = colors[Math.floor(Math.random()*colors.length)]
+            let size = Math.floor(Math.random()*256)+128
+            let softness = Math.random()*0.4 + 0.05
+            createSoftBody(mouse.x, mouse.y, size, size, 8, 8, softness, `hsl(${Math.floor(Math.random()*100)}, ${Math.floor(softness*100*4)}%, 50%)`)
+        } else {
+            mouseDown = true;
+        }
     })
     window.addEventListener('mouseup', (e) => {
-        debug_move = false;
+        mouseDown = false;
     })
     window.addEventListener('mousemove', (e) => {
         mouse = {x:e.clientX, y:e.clientY}
@@ -249,13 +321,41 @@ function init() {
 }
 function update() {
     solveAllPhysics()
+
+    //find closest point
+    if(physics_bodies.length > 0 && !mouseDown) {
+        let closestObjDist = 999999999999;
+        physics_bodies.forEach((obj, obj_i) => {
+            obj.mesh.forEach((point, point_i) => {
+                let curr_dist = v_distance(mouse, point)
+                // console.log(curr_dist)
+                opf++
+                if(curr_dist < closestObjDist) {
+                    validDist = curr_dist < 30
+                    closestObjDist = curr_dist
+                    closestObjI = obj_i
+                    closestObjElemI = point_i
+                }
+            });
+        })
+    }
+
+    if(physics_bodies.length > 0) {
+        if(mouseDown && validDist) {
+            physics_bodies[closestObjI].mesh[closestObjElemI] = mouse
+            physics_bodies[closestObjI].mesh_frozen = closestObjElemI
+        } else {
+            physics_bodies[closestObjI].mesh_frozen = -1
+        }
+    }
 }
 
-function createSoftBody(x, y, w, h, elements_x, elements_y, softness, color) {
-    physics_bodies.push(new SoftBody(x, y, w, h, elements_x, elements_y, softness, color))
+function createSoftBody(x, y, w, h, elx, ely, softness, color) {
+    physics_bodies.push(new SoftBody(x, y, w, h, elx, ely, softness, color))
 }
 
 function solveAllPhysics() {
+    opf = 0;
     for(let body of physics_bodies) {
         body.update()
     }
@@ -266,6 +366,23 @@ function render() {
     for(let body of physics_bodies) {
         body.render()
     }
+    if(display_debug) {
+        ctx.font = '16px sans-serif'
+        ctx.textBaseline = 'top'
+        ctx.fillText('Debug mode on', 0, 0, canvas.width)
+        ctx.fillText(`Physics objects: ${physics_bodies.length}`, 0, 18, canvas.width)
+        ctx.fillText(`Operations per frame: ${opf}`, 0, 18*2, canvas.width)
+
+        ctx.strokeStyle = 'cyan'
+        if(!validDist) {
+            ctx.strokeStyle = 'red'
+        }
+        if(physics_bodies.length > 0) {
+            drawLine(mouse.x, mouse.y, physics_bodies[closestObjI].mesh[closestObjElemI].x, physics_bodies[closestObjI].mesh[closestObjElemI].y, 3)
+        }
+    }
+
+
     requestAnimationFrame(render)
 }
 
@@ -316,4 +433,31 @@ function v_distance(a, b) {
   //returns distance between 2 positions. Uses vectors as arguments
   let _a = a.x - b.x, _b = a.y - b.y;
   return Math.sqrt(_a*_a + _b*_b);
+}
+
+function v_triangleArea(a, b, c) {
+    let x = (a.x + c.x) * (c.y - a.y) - (a.x + b.x) * (b.y - a.y) - (b.x + c.x) * (c.y - b.y);
+    return Math.abs(x) * 0.5
+}
+
+function v_quadArea(a, b, c, d) {
+    //make the quad be two triangles
+    return v_triangleArea(a, b, c) + v_triangleArea(a, c, d)
+}
+
+function v_pointInsideQuad(a, b, c, d, point) {
+    //get epsilon to account for float innacuracy
+    const EPS = Number.EPSILON
+    const quadArea = v_quadArea(a, b, c, d)
+    
+    //create triangles from each quad point & add up their areas
+    let area = 0;
+    area += v_triangleArea(a, b, p)
+    area += v_triangleArea(b, c, p)
+    area += v_triangleArea(c, d, p)
+    area += v_triangleArea(d, a, p)
+
+    //if area is equal to the quad, then the point is inside of the quad
+    //otherwise it would be bigger so it would be outside
+    return Math.abs(area - quadArea) < EPS
 }
